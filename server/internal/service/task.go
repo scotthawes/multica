@@ -412,6 +412,24 @@ func (s *TaskService) buildRuntimeMCPOverlay(ctx context.Context, originatorUser
 // ponytail: no cache, direct DB reads; nil Queries or empty tier returns tier.
 const modelHealthTTL = 10 * time.Minute
 
+// defaultModelTier is the logical tier assumed for agents with no stored
+// service_tier. Without it tier="" bypasses the 404 model_tier_map entirely
+// (resolveConcreteModel returns ""), leaving concrete_model empty so the
+// claim payload falls back to agent.model and model-health marking never
+// engages (P0 #52: tier-less free-pin agents, empty concrete,
+// agent_error.unknown with no fallback).
+const defaultModelTier = "balanced"
+
+// effectiveModelTier returns the agent's stored service tier, defaulting to
+// defaultModelTier when unset so tier-less (e.g. free-model) agents still
+// resolve through the tier map and its health-aware fallback chain.
+func effectiveModelTier(serviceTier pgtype.Text) string {
+	if serviceTier.Valid && serviceTier.String != "" {
+		return serviceTier.String
+	}
+	return defaultModelTier
+}
+
 func (s *TaskService) resolveConcreteModel(ctx context.Context, workspaceID pgtype.UUID, tier string) string {
 	if tier == "" || s == nil || s.Queries == nil {
 		return tier
@@ -1699,10 +1717,8 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
 	// 404 model_tier_map: concrete = health-aware pick from [primary + fallback_concrete]
-	tier := ""
-	if agent.ServiceTier.Valid {
-		tier = agent.ServiceTier.String
-	}
+	// Tier-less agents resolve via defaultModelTier so concrete is populated.
+	tier := effectiveModelTier(agent.ServiceTier)
 	requested := s.getPrimaryConcrete(ctx, issue.WorkspaceID, tier)
 	concrete := s.resolveConcreteModel(ctx, issue.WorkspaceID, tier)
 	if concrete != requested && requested != "" {
@@ -1864,10 +1880,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
-	tier := ""
-	if agent.ServiceTier.Valid {
-		tier = agent.ServiceTier.String
-	}
+	tier := effectiveModelTier(agent.ServiceTier)
 	requested := s.getPrimaryConcrete(ctx, issue.WorkspaceID, tier)
 	concrete := s.resolveConcreteModel(ctx, issue.WorkspaceID, tier)
 	if concrete != requested && requested != "" {
@@ -5449,10 +5462,7 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
             // Health-aware retry concrete: re-resolve tier via health-marked state so child skips unhealthy primary.
             var retryConcrete pgtype.Text
             if ag, err := qtx.GetAgent(ctx, t.AgentID); err == nil {
-                tier := ""
-                if ag.ServiceTier.Valid {
-                    tier = ag.ServiceTier.String
-                }
+                tier := effectiveModelTier(ag.ServiceTier)
                 if tier != "" {
                     var ws pgtype.UUID
                     if t.IssueID.Valid {
@@ -5565,10 +5575,7 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 				// concrete, leaving provider recovery as the rerun's path.
 				var rerunConcrete pgtype.Text
 				if ag, err := qtx.GetAgent(ctx, t.AgentID); err == nil {
-					tier := ""
-					if ag.ServiceTier.Valid {
-						tier = ag.ServiceTier.String
-					}
+					tier := effectiveModelTier(ag.ServiceTier)
 					if tier != "" {
 						var ws pgtype.UUID
 						if t.IssueID.Valid {
@@ -6147,10 +6154,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	// Health-aware retry concrete: re-resolve tier via health so orphan retry also skips unhealthy.
 	var retryConcrete pgtype.Text
 	if ag, err := qtx.GetAgent(ctx, parent.AgentID); err == nil {
-		tier := ""
-		if ag.ServiceTier.Valid {
-			tier = ag.ServiceTier.String
-		}
+		tier := effectiveModelTier(ag.ServiceTier)
 		if tier != "" {
 			var ws pgtype.UUID
 			if parent.IssueID.Valid {

@@ -137,6 +137,14 @@ What still needs a human in the loop:
   orphan committed work outside the managed workdir.
 - **G4 CAS/fencing** (upstream #8039) — no compare-and-swap fencing on task
   claim, so a stale daemon can double-run a task.
+- **G5 provenance** — running backend `0e998ee64f79` not found in fork
+  objects (origin/main `0a54725fe`); verify via
+  `git merge-base --is-ancestor` or document divergence before declaring
+  autonomy live.
+- **Release autonomy-v0.2 exit criteria** — >=50 zero-touch tasks, >=95%
+  over 7-day soak, digest auto-clears to 0, inbox <=3 genuinely-human,
+  fault-injected zero duplicates/stale writes, `make check` green,
+  tag `autonomy-v0.2`.
 
 Free-model stable bar: 20 consecutive `completed`, `consecutive_failures=0`,
 and `concrete_model` populated on an opted-in healthy free model (`hy3-free`

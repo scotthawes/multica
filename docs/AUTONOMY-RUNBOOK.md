@@ -123,6 +123,25 @@ Open `agent_requested_help` items roll up into one `agent_help_digest` per
 (15m cadence, registered `server/cmd/server/main.go:692`). Reconcile upserts
 the digest and clears stale digests with no open items left.
 
+### Autonomy gaps to achieved
+
+What still needs a human in the loop:
+
+- **G1 auto-resolve missing** — `notifyAgentHelpRequested`
+  (`server/internal/service/task.go:8118`) routes to a human inbox item only;
+  the help block (`server/internal/daemon/prompt.go:88`) never attempts a
+  machine fix first.
+- **G2 SLA/escalation missing** — no deadline or escalation ladder on open
+  `agent_help_requested` items; they sit until a human closes them.
+- **G3 workdir** (upstream #7998) — crash between finalize and report can
+  orphan committed work outside the managed workdir.
+- **G4 CAS/fencing** (upstream #8039) — no compare-and-swap fencing on task
+  claim, so a stale daemon can double-run a task.
+
+Free-model stable bar: 20 consecutive `completed`, `consecutive_failures=0`,
+and `concrete_model` populated on an opted-in healthy free model (`hy3-free`
+currently the only healthy free).
+
 ## Quick reference
 
 | Symptom | Action |

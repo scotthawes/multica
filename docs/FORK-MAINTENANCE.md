@@ -15,6 +15,9 @@ branch for the next patch series.
 | `origin` | multica-ai/multica | upstream source, fetch only |
 | `mine` | scotthawes/multica | our published backup |
 
+Fork-only rule: push and open PRs against `mine` (scotthawes/multica) only.
+`origin` is fetch-only (`push` is `no_push`) — never push to it.
+
 ## Ongoing work
 
 Everything goes through the `my-fixes` branch:

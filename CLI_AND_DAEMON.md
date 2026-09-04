@@ -888,6 +888,13 @@ multica model-map set-fallback --workspace <ws-id> --premium claude,kimi-k2.6
 `get` / `set` / `get-fallback` / `set-fallback` all require `--global` or
 `--workspace`. `set-fallback` takes a comma-separated ordered list per tier.
 
+Agents with `service_tier` NULL bypass the tier map: `tier=""` resolves to an
+empty concrete and dispatch uses `agent.model` directly
+(`server/internal/daemon/daemon.go:7759`), so a free-tier pin requires setting
+`service_tier` (or repinning `agent.model` row-by-row). The fallback chain
+only engages when the primary is marked unhealthy
+(`server/internal/service/task.go:441-451`).
+
 ### Model health
 
 A model failure marks it `unhealthy`; the resolver then picks a known-healthy

@@ -547,7 +547,11 @@ WHERE id = $1 AND issue_id IS NULL
 -- agent's resume context (session_id/work_dir) so the child can continue
 -- the conversation when the backend supports it. Resume-unsafe failures are
 -- retried as fresh sessions so the child does not inherit a stuck agent
--- conversation. Keep the CASE WHEN predicates in sync with
+-- conversation, but the workdir is always inherited: a resume-unsafe provider
+-- session does NOT imply a resume-unsafe workdir (G3 #55, ref upstream #7998).
+-- durable_work_dir is always inherited too so the retry keeps the
+-- daemon-confirmed replacement directory when the parent already finalized a
+-- disposable worktree. Keep the CASE WHEN predicate in sync with
 -- resumeUnsafeFailureReason and the resume lookup blacklists. attempt is
 -- incremented; max_attempts, trigger_comment_id, coalesced_comment_ids,
 -- is_leader_task, and squad_id are inherited so the retried task receives the
@@ -599,7 +603,7 @@ WHERE id = $1 AND issue_id IS NULL
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, chat_session_id, autopilot_run_id,
     status, priority, trigger_comment_id, coalesced_comment_ids, trigger_summary, context,
-    session_id, work_dir,
+    session_id, work_dir, durable_work_dir,
     attempt, max_attempts, parent_task_id, force_fresh_session, is_leader_task,
     squad_id, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id,
@@ -613,7 +617,8 @@ SELECT
     CASE WHEN p.chat_session_id IS NOT NULL THEN GREATEST(p.priority, 3) ELSE p.priority END,
     p.trigger_comment_id, p.coalesced_comment_ids, p.trigger_summary, p.context,
     CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity' THEN NULL ELSE p.session_id END,
-    CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity' THEN NULL ELSE p.work_dir END,
+    p.work_dir,
+    p.durable_work_dir,
     p.attempt + 1, COALESCE(sqlc.narg(max_attempts)::int, p.max_attempts), p.id,
     p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity',
     p.is_leader_task,

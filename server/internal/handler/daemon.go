@@ -2524,6 +2524,11 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			if src, err := h.Queries.GetAgentTask(r.Context(), task.RerunOfTaskID); err == nil && rerunSourceMatchesTaskScope(*task, src) {
 				if src.WorkDir.Valid {
 					resp.PriorWorkDir = src.WorkDir.String
+				} else if src.DurableWorkDir.Valid {
+					// G3 #55: a source that already finalized its disposable
+					// worktree reports only durable_work_dir; offer it so the
+					// rerun keeps workdir continuity instead of starting cold.
+					resp.PriorWorkDir = src.DurableWorkDir.String
 				}
 				if !service.ResumeUnsafeFailure(src.FailureReason.String, src.Error.String) &&
 					src.SessionID.Valid && src.RuntimeID == task.RuntimeID {
@@ -2574,6 +2579,22 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				IssueID: task.IssueID,
 			}); err == nil && missing {
 				resp.PriorSessionResumeUnavailable = true
+			}
+		}
+		// G3 #55: an auto-retry child with force_fresh_session=true (e.g.
+		// codex_semantic_inactivity) skips the lookup above by design — the
+		// session must stay fresh — but the workdir must still be offered.
+		// A resume-unsafe session does NOT imply a resume-unsafe workdir, so
+		// resolve the retry parent directly and offer its work_dir (falling
+		// back to durable_work_dir when the disposable worktree is already
+		// gone). Never sets PriorSessionID here.
+		if resp.PriorWorkDir == "" && task.RetryOfTaskID.Valid {
+			if parent, err := h.Queries.GetAgentTask(r.Context(), task.RetryOfTaskID); err == nil {
+				if parent.WorkDir.Valid {
+					resp.PriorWorkDir = parent.WorkDir.String
+				} else if parent.DurableWorkDir.Valid {
+					resp.PriorWorkDir = parent.DurableWorkDir.String
+				}
 			}
 		}
 	}

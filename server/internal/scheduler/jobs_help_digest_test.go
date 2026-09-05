@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -182,6 +183,20 @@ func TestGroupHelpItems_EmptyClearsAllDigests(t *testing.T) {
 func TestHelpDigestJob_ReconcilesAcrossDB(t *testing.T) {
 	pool := integrationPool(t)
 	ctx := context.Background()
+	// Pin the G1 slice-2 auto-resolve path to no-resolve: the seeded
+	// credential needs must aggregate into the digest (slice-1 behavior)
+	// regardless of what secrets the test environment happens to hold.
+	prevLookup := HelpSecretLookup
+	prevRequeue := HelpRequeueTask
+	HelpSecretLookup = func(string) (string, bool) { return "", false }
+	HelpRequeueTask = func(context.Context, *pgxpool.Pool, string, time.Duration) error {
+		t.Error("HelpRequeueTask must not fire while the presence check denies all")
+		return nil
+	}
+	t.Cleanup(func() {
+		HelpSecretLookup = prevLookup
+		HelpRequeueTask = prevRequeue
+	})
 	q := db.New(pool)
 
 	ws := mustUUID(t, uuid.NewString())

@@ -692,6 +692,12 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.HelpDigestJob(pool)); err != nil {
 		slog.Warn("scheduler: failed to register help_digest job", "error", err)
 	}
+	// G2 (issue #54): escalate unattended agent_help_requested items past
+	// the SLA (default 30m, MULTICA_HELP_SLA_MINUTES to override) to a
+	// widened recipient set with an auditable escalation row per recipient.
+	if err := schedulerMgr.Register(scheduler.HelpSLAJob(pool)); err != nil {
+		slog.Warn("scheduler: failed to register help_sla job", "error", err)
+	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)
 	}()

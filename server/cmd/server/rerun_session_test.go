@@ -566,11 +566,11 @@ func TestCreateRetryTaskFreshensCodexSemanticInactivity(t *testing.T) {
 	if err := testPool.QueryRow(ctx, `
 		INSERT INTO agent_task_queue (
 			agent_id, runtime_id, issue_id, status, priority,
-			started_at, completed_at, session_id, work_dir, failure_reason,
+			started_at, completed_at, session_id, work_dir, durable_work_dir, failure_reason,
 			attempt, max_attempts
 		)
 		VALUES ($1, $2, $3, 'failed', 0, now() - interval '1 minute', now() - interval '1 minute',
-		        'CODEX-STUCK-SESSION', '/tmp/codex-stuck', 'codex_semantic_inactivity', 1, 2)
+		        'CODEX-STUCK-SESSION', '/tmp/codex-stuck', '/tmp/codex-durable', 'codex_semantic_inactivity', 1, 2)
 		RETURNING id
 	`, agentID, runtimeID, issueID).Scan(&parentID); err != nil {
 		t.Fatalf("insert codex semantic inactivity parent task: %v", err)
@@ -584,14 +584,61 @@ func TestCreateRetryTaskFreshensCodexSemanticInactivity(t *testing.T) {
 	if child.SessionID.Valid {
 		t.Fatalf("expected retry child to drop poisoned session_id, got %q", child.SessionID.String)
 	}
-	if child.WorkDir.Valid {
-		t.Fatalf("expected retry child to drop poisoned work_dir, got %q", child.WorkDir.String)
+	// G3 #55 (ref upstream #7998): a resume-unsafe session does NOT imply a
+	// resume-unsafe workdir — the retry keeps the parent's work_dir and
+	// durable_work_dir so the next run reuses the directory instead of
+	// starting cold, while still forcing a fresh session.
+	if !child.WorkDir.Valid || child.WorkDir.String != "/tmp/codex-stuck" {
+		t.Fatalf("expected retry child to inherit parent work_dir, got %+v", child.WorkDir)
+	}
+	if !child.DurableWorkDir.Valid || child.DurableWorkDir.String != "/tmp/codex-durable" {
+		t.Fatalf("expected retry child to inherit parent durable_work_dir, got %+v", child.DurableWorkDir)
 	}
 	if !child.ForceFreshSession {
 		t.Fatal("expected retry child to force a fresh session")
 	}
 	if child.Attempt != 2 {
 		t.Fatalf("expected attempt 2, got %d", child.Attempt)
+	}
+}
+
+func TestCreateRetryTaskPreservesDurableWorkDir(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+
+	issueID, agentID, runtimeID := setupRerunTestFixture(t)
+	t.Cleanup(func() { cleanupRerunFixture(t, issueID) })
+
+	ctx := context.Background()
+
+	var parentID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, status, priority,
+			started_at, completed_at, session_id, work_dir, durable_work_dir, failure_reason,
+			attempt, max_attempts
+		)
+		VALUES ($1, $2, $3, 'failed', 0, now() - interval '1 minute', now() - interval '1 minute',
+		        'TIMEOUT-SESSION', '/tmp/timeout-work', '/tmp/timeout-durable', 'timeout', 1, 2)
+		RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&parentID); err != nil {
+		t.Fatalf("insert timeout parent task: %v", err)
+	}
+
+	queries := db.New(testPool)
+	child, err := queries.CreateRetryTask(ctx, db.CreateRetryTaskParams{ID: pgtype.UUID{Bytes: parseUUIDBytes(parentID), Valid: true}})
+	if err != nil {
+		t.Fatalf("CreateRetryTask failed: %v", err)
+	}
+	if !child.SessionID.Valid || child.SessionID.String != "TIMEOUT-SESSION" {
+		t.Fatalf("expected retry child to inherit session_id, got %+v", child.SessionID)
+	}
+	if !child.WorkDir.Valid || child.WorkDir.String != "/tmp/timeout-work" {
+		t.Fatalf("expected retry child to inherit work_dir, got %+v", child.WorkDir)
+	}
+	if !child.DurableWorkDir.Valid || child.DurableWorkDir.String != "/tmp/timeout-durable" {
+		t.Fatalf("expected retry child to inherit durable_work_dir, got %+v", child.DurableWorkDir)
 	}
 }
 

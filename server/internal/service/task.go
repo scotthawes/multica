@@ -6065,7 +6065,9 @@ func (s *TaskService) autopilotRunRetrySource(ctx context.Context, t db.AgentTas
 // went offline, dispatch/run timeout) and the task hasn't exhausted its
 // max_attempts budget. The child task inherits agent/runtime/issue/chat
 // links and, for resume-safe failures, the parent's session_id/work_dir so
-// the agent can resume the conversation when the backend supports it. Returns
+// the agent can resume the conversation when the backend supports it. The
+// work_dir and durable_work_dir are always inherited (G3 #55): a
+// resume-unsafe session does NOT imply a resume-unsafe workdir. Returns
 // the new task, or nil when no retry was created.
 //
 // Cron-sourced autopilot tasks are NOT auto-retried here; the autopilot

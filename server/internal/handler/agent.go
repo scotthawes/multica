@@ -784,14 +784,19 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		branchName = t.BranchName.String
 	}
 	return AgentTaskResponse{
-		ID:                     uuidToString(t.ID),
-		AgentID:                uuidToString(t.AgentID),
-		RuntimeID:              uuidToString(t.RuntimeID),
-		IssueID:                uuidToString(t.IssueID),
-		WorkspaceID:            workspaceID,
-		Status:                 t.Status,
-		Priority:               t.Priority,
-		DispatchedAt:           timestampToPtr(t.DispatchedAt),
+		ID:          uuidToString(t.ID),
+		AgentID:     uuidToString(t.AgentID),
+		RuntimeID:   uuidToString(t.RuntimeID),
+		IssueID:     uuidToString(t.IssueID),
+		WorkspaceID: workspaceID,
+		Status:      t.Status,
+		Priority:    t.Priority,
+		// DispatchedAt doubles as the G4 (#57) fencing epoch: the daemon
+		// echoes it verbatim on start / park / extend-lease, so it must
+		// round-trip at full Postgres microsecond precision. The legacy
+		// second-precision format truncated sub-second digits, which made
+		// every fenced CAS miss even for the current claim generation.
+		DispatchedAt:           timestampToNanoPtr(t.DispatchedAt),
 		StartedAt:              timestampToPtr(t.StartedAt),
 		CompletedAt:            timestampToPtr(t.CompletedAt),
 		Result:                 result,

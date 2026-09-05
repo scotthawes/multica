@@ -135,8 +135,9 @@ What still needs a human in the loop:
   `agent_help_requested` items; they sit until a human closes them.
 - **G3 workdir** (upstream #7998) — crash between finalize and report can
   orphan committed work outside the managed workdir.
-- **G4 CAS/fencing** (upstream #8039) — no compare-and-swap fencing on task
-  claim, so a stale daemon can double-run a task.
+- **G4 CAS/fencing** (upstream #8039) — implemented (fork #57): `dispatched_at`
+  claim-generation fencing on start / park / extend-lease; stale generation →
+  409 fenced, same-generation retry → idempotent.
 - **G5 provenance** — running backend `0e998ee64f79` not found in fork
   objects (origin/main `0a54725fe`); verify via
   `git merge-base --is-ancestor` or document divergence before declaring

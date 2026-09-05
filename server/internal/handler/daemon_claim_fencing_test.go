@@ -6,8 +6,8 @@ import (
 )
 
 // G4 (#57) fencing epoch parsing: the daemon echoes the claim response's
-// dispatched_at (RFC3339) as the idempotency-key / fencing epoch on
-// autonomous mutations (start / park / extend-lease).
+// dispatched_at (RFC3339Nano, microsecond-precise) as the idempotency-key /
+// fencing epoch on autonomous mutations (start / park / extend-lease).
 func TestParseFencingEpoch(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	raw := now.Format(time.RFC3339)

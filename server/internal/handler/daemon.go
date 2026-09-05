@@ -3586,10 +3586,11 @@ func (h *Handler) ExtendTaskPrepareLease(w http.ResponseWriter, r *http.Request)
 }
 
 // parseFencingEpoch parses the G4 (#57) claim-generation epoch the daemon
-// echoes back on autonomous mutations. It accepts RFC3339 (the claim
-// response's dispatched_at wire shape) and reports a valid timestamptz on
-// success. Empty input is the legacy opt-out: callers map it to an invalid
-// pgtype (unfenced) before reaching here, so empty never reaches this parser.
+// echoes back on autonomous mutations. It accepts RFC3339, including the
+// fractional seconds the claim response's dispatched_at wire shape carries,
+// and reports a valid timestamptz on success. Empty input is the legacy
+// opt-out: callers map it to an invalid pgtype (unfenced) before reaching
+// here, so empty never reaches this parser.
 func parseFencingEpoch(raw string) (pgtype.Timestamptz, error) {
 	t, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
 	if err != nil {

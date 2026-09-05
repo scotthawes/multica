@@ -48,6 +48,11 @@ type HelpDigestItem struct {
 	BlockedReason *string  `json:"blocked_reason,omitempty"`
 	Needs         []string `json:"needs,omitempty"`
 	Confidence    *float64 `json:"confidence,omitempty"`
+	// NeedClass is the G1 resolver verdict (fork issue #53): empty,
+	// credential, or human_only. Additive and omitempty so older readers
+	// ignore it. Satisfiable credential items are auto-resolved before the
+	// digest is built, so a digest only ever carries still-blocked items.
+	NeedClass HelpNeedClass `json:"need_class,omitempty"`
 }
 
 // HelpDigestDetails is the jsonb payload of an agent_help_digest inbox item.
@@ -93,14 +98,19 @@ func HelpDigestJob(pool *pgxpool.Pool) JobSpec {
 }
 
 // RunHelpDigest reconciles every (workspace, recipient) digest against the
-// current set of open agent_help_requested items. It returns a HandlerResult
-// whose Result carries the counts for auditability.
+// current set of open agent_help_requested items. Before reconciling it
+// auto-resolves satisfiable credential items (G1 slice 2): when the named
+// secret is already present the source item is archived and its task
+// re-enqueued with delay, so only genuinely human-blocked items reach the
+// digest. It returns a HandlerResult whose Result carries the counts for
+// auditability.
 func RunHelpDigest(ctx context.Context, pool *pgxpool.Pool) (HandlerResult, error) {
 	open, err := listOpenAgentHelpRequested(ctx, pool)
 	if err != nil {
 		return HandlerResult{}, fmt.Errorf("help_digest: list open help items: %w", err)
 	}
-	groups := groupHelpItems(open)
+	remaining, autoResolved := autoResolveSatisfiableHelp(ctx, pool, open)
+	groups := groupHelpItems(remaining)
 
 	existing, err := listOpenAgentHelpDigestKeys(ctx, pool)
 	if err != nil {
@@ -133,13 +143,15 @@ func RunHelpDigest(ctx context.Context, pool *pgxpool.Pool) (HandlerResult, erro
 	}
 
 	slog.Info("help_digest: reconciled",
-		"open_help", len(open), "groups", upserted, "cleared", cleared)
+		"open_help", len(open), "groups", upserted, "cleared", cleared,
+		"auto_resolved", autoResolved)
 	return HandlerResult{
-		RowsAffected: upserted + cleared,
+		RowsAffected: upserted + cleared + autoResolved,
 		Result: map[string]any{
-			"open_help": int64(len(open)),
-			"groups":    upserted,
-			"cleared":   cleared,
+			"open_help":     int64(len(open)),
+			"groups":        upserted,
+			"cleared":       cleared,
+			"auto_resolved": autoResolved,
 		},
 	}, nil
 }
@@ -230,6 +242,7 @@ func buildHelpDigestDetails(items []db.InboxItem) (HelpDigestDetails, error) {
 			BlockedReason: src.BlockedReason,
 			Needs:         src.Needs,
 			Confidence:    src.Confidence,
+			NeedClass:     ClassifyHelpNeeds(src.Needs),
 		})
 	}
 	// Deterministic ordering by task_id so digests are stable across runs.

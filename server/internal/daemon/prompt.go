@@ -85,7 +85,7 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 func buildHelpSignalBlock() string {
 	var b strings.Builder
 	b.WriteString("## When you are blocked, ask for help — do not guess\n\n")
-	b.WriteString("If you cannot make progress after reasonable effort — a missing secret or access, an ambiguous or contradictory requirement, or a decision that only a human can make — STOP and report blocked rather than retrying endlessly or guessing. End the task as blocked/failed and clearly state: a `blocked_reason` (what is actually stopping you), the specific `needs` (exactly what a human must provide — a credential, a clarification, or a decision), and your `confidence` in the diagnosis on a 0–1 scale. The system treats this as an `agent_requested_help` signal and routes it straight to a human; it will NOT auto-retry, so a precise, honest blocker report is the fastest way to get unstuck.\n\n")
+	b.WriteString("If you cannot make progress after reasonable effort — a missing secret or access, an ambiguous or contradictory requirement, or a decision that only a human can make — STOP and report blocked rather than retrying endlessly or guessing. End the task as blocked/failed and clearly state: a `blocked_reason` (what is actually stopping you), the specific `needs` (exactly what a human must provide — a credential, a clarification, or a decision), and your `confidence` in the diagnosis on a 0–1 scale. The system treats this as an `agent_requested_help` signal and routes it straight to a human; only credential needs whose named secret is already present auto-retry once after a short delay, everything else waits for a human, so a precise, honest blocker report is the fastest way to get unstuck.\n\n")
 	return b.String()
 }
 

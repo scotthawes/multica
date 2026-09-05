@@ -5605,7 +5605,7 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 			reason = fmt.Sprintf("%s (held by task %s)", reason, shortID(holder))
 		}
 		taskLog.Info("local_directory: waiting on path mutex", "holder", shortID(holder))
-		if waitErr := d.client.MarkTaskWaitingLocalDirectory(ctx, task.ID, reason); waitErr != nil {
+		if waitErr := d.client.MarkTaskWaitingLocalDirectory(ctx, task.ID, reason, task.DispatchedAt); waitErr != nil {
 			// Non-fatal: even if the server-side flag fails to update,
 			// we still want to block on the lock and proceed when free.
 			// The UI just won't see the explicit "waiting" badge.
@@ -6441,7 +6441,7 @@ func (d *Daemon) startTaskPrepareLeaseExtender(ctx context.Context, task Task, t
 				return
 			case <-ticker.C:
 				reqCtx, reqCancel := context.WithTimeout(leaseCtx, taskPrepareLeaseTimeout)
-				err := d.client.ExtendTaskPrepareLease(reqCtx, task.RuntimeID, task.ID)
+				err := d.client.ExtendTaskPrepareLease(reqCtx, task.RuntimeID, task.ID, task.DispatchedAt)
 				reqCancel()
 				if err != nil {
 					taskLog.Warn("extend task prepare lease failed", "error", err)
@@ -7337,7 +7337,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				}
 				taskLog.Info("local_directory: worktree snapshot waiting for holder",
 					"holder", shortID(holder))
-				if waitErr := d.client.MarkTaskWaitingLocalDirectory(waitCtx, task.ID, reason); waitErr != nil {
+				if waitErr := d.client.MarkTaskWaitingLocalDirectory(waitCtx, task.ID, reason, task.DispatchedAt); waitErr != nil {
 					// Non-fatal: the wait still happens, the UI just won't
 					// show the explicit "waiting" badge.
 					taskLog.Warn("local_directory: mark waiting status failed", "error", waitErr)
@@ -7536,7 +7536,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// taskfailure.Classify path records the failure with the same
 	// "start task failed: <…>" string and the same failure_reason
 	// taxonomy as before — see MUL-2946 for the classifier contract.
-	if err := d.client.StartTask(prepareCtx, task.ID); err != nil {
+	if err := d.client.StartTask(prepareCtx, task.ID, task.DispatchedAt); err != nil {
 		stopPrepareLease()
 		return TaskResult{}, fmt.Errorf("start task failed: %w", err)
 	}

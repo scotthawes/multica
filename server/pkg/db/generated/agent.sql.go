@@ -3840,6 +3840,99 @@ func (q *Queries) ExtendAgentTaskPrepareLease(ctx context.Context, arg ExtendAge
 	return i, err
 }
 
+const extendAgentTaskPrepareLeaseCAS = `-- name: ExtendAgentTaskPrepareLeaseCAS :one
+UPDATE agent_task_queue
+SET prepare_lease_expires_at = now() + make_interval(secs => $4::double precision)
+WHERE id = $1
+  AND runtime_id = $2
+  AND status IN ('dispatched', 'waiting_local_directory')
+  AND started_at IS NULL
+  AND dispatched_at = $3
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, concrete_model, requested_concrete_model, auto_rerun_count, help_signal
+`
+
+type ExtendAgentTaskPrepareLeaseCASParams struct {
+	ID           pgtype.UUID        `json:"id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	DispatchedAt pgtype.Timestamptz `json:"dispatched_at"`
+	LeaseSecs    float64            `json:"lease_secs"`
+}
+
+// G4 (#57) fenced variant of ExtendAgentTaskPrepareLease. A stale daemon
+// holding an old claim generation must not be able to keep extending the
+// lease past a reclaim; the dispatched_at guard makes the extend fail closed
+// so the reclaimed generation keeps its own lease.
+func (q *Queries) ExtendAgentTaskPrepareLeaseCAS(ctx context.Context, arg ExtendAgentTaskPrepareLeaseCASParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, extendAgentTaskPrepareLeaseCAS,
+		arg.ID,
+		arg.RuntimeID,
+		arg.DispatchedAt,
+		arg.LeaseSecs,
+	)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
+		&i.ChannelContextRevision,
+		&i.ConcreteModel,
+		&i.RequestedConcreteModel,
+		&i.AutoRerunCount,
+		&i.HelpSignal,
+	)
+	return i, err
+}
+
 const failAgentTask = `-- name: FailAgentTask :one
 UPDATE agent_task_queue
 SET status = 'failed',
@@ -7068,6 +7161,96 @@ func (q *Queries) MarkAgentTaskWaitingLocalDirectory(ctx context.Context, arg Ma
 	return i, err
 }
 
+const markAgentTaskWaitingLocalDirectoryCAS = `-- name: MarkAgentTaskWaitingLocalDirectoryCAS :one
+UPDATE agent_task_queue
+SET status = 'waiting_local_directory',
+    wait_reason = $2,
+    prepare_lease_expires_at = now() + make_interval(secs => $4::double precision)
+WHERE id = $1 AND status = 'dispatched' AND dispatched_at = $3
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, concrete_model, requested_concrete_model, auto_rerun_count, help_signal
+`
+
+type MarkAgentTaskWaitingLocalDirectoryCASParams struct {
+	ID               pgtype.UUID        `json:"id"`
+	WaitReason       pgtype.Text        `json:"wait_reason"`
+	DispatchedAt     pgtype.Timestamptz `json:"dispatched_at"`
+	PrepareLeaseSecs float64            `json:"prepare_lease_secs"`
+}
+
+// G4 (#57) fenced variant of MarkAgentTaskWaitingLocalDirectory. Same
+// dispatched_at fencing epoch as StartAgentTaskCAS: a stale claim generation
+// cannot park a task another generation already owns.
+func (q *Queries) MarkAgentTaskWaitingLocalDirectoryCAS(ctx context.Context, arg MarkAgentTaskWaitingLocalDirectoryCASParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, markAgentTaskWaitingLocalDirectoryCAS,
+		arg.ID,
+		arg.WaitReason,
+		arg.DispatchedAt,
+		arg.PrepareLeaseSecs,
+	)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
+		&i.ChannelContextRevision,
+		&i.ConcreteModel,
+		&i.RequestedConcreteModel,
+		&i.AutoRerunCount,
+		&i.HelpSignal,
+	)
+	return i, err
+}
+
 const markChatFinalizeDeferred = `-- name: MarkChatFinalizeDeferred :one
 UPDATE agent_task_queue
 SET chat_finalize_deferred_at = now()
@@ -8677,6 +8860,97 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 // "previously waited".
 func (q *Queries) StartAgentTask(ctx context.Context, id pgtype.UUID) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, startAgentTask, id)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
+		&i.ChannelContextRevision,
+		&i.ConcreteModel,
+		&i.RequestedConcreteModel,
+		&i.AutoRerunCount,
+		&i.HelpSignal,
+	)
+	return i, err
+}
+
+const startAgentTaskCAS = `-- name: StartAgentTaskCAS :one
+UPDATE agent_task_queue
+SET status = 'running',
+    started_at = now(),
+    wait_reason = NULL,
+    prepare_lease_expires_at = NULL
+WHERE id = $1
+  AND status IN ('dispatched', 'waiting_local_directory')
+  AND dispatched_at = $2
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, concrete_model, requested_concrete_model, auto_rerun_count, help_signal
+`
+
+type StartAgentTaskCASParams struct {
+	ID           pgtype.UUID        `json:"id"`
+	DispatchedAt pgtype.Timestamptz `json:"dispatched_at"`
+}
+
+// G4 (#57) fenced variant of StartAgentTask. The daemon passes the
+// dispatched_at it observed on its claim response as the fencing epoch /
+// idempotency key: only the holder of the current claim generation may
+// transition to running. A stale daemon whose claim was reclaimed (reclaim
+// refreshes dispatched_at) matches zero rows and must drop the task instead
+// of double-running it. A duplicate Start with the same epoch after success
+// matches zero rows as well — callers treat running-with-same-epoch as an
+// idempotent retry (see TaskService.StartTaskCAS).
+func (q *Queries) StartAgentTaskCAS(ctx context.Context, arg StartAgentTaskCASParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, startAgentTaskCAS, arg.ID, arg.DispatchedAt)
 	var i AgentTaskQueue
 	err := row.Scan(
 		&i.ID,

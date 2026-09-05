@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -3558,14 +3559,65 @@ func (h *Handler) ExtendTaskPrepareLease(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	updated, err := h.TaskService.ExtendTaskPrepareLease(r.Context(), parseUUID(taskID), parseUUID(runtimeID))
+	// G4 (#57): optional fencing epoch. When the daemon echoes the
+	// dispatched_at from its claim response, the extend is fenced to that
+	// claim generation so a stale daemon cannot hold the lease past a reclaim.
+	var epoch pgtype.Timestamptz
+	if raw := r.URL.Query().Get("dispatched_at"); raw != "" {
+		parsed, perr := parseFencingEpoch(raw)
+		if perr != nil {
+			writeError(w, http.StatusBadRequest, "invalid dispatched_at: "+perr.Error())
+			return
+		}
+		epoch = parsed
+	}
+	updated, err := h.TaskService.ExtendTaskPrepareLeaseCAS(r.Context(), parseUUID(taskID), parseUUID(runtimeID), epoch)
 	if err != nil {
+		if errors.Is(err, service.ErrTaskClaimFenced) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		slog.Warn("extend task prepare lease failed", "task_id", taskID, "runtime_id", runtimeID, "error", err)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	writeJSON(w, http.StatusOK, taskToResponse(*updated, taskWorkspaceID))
+}
+
+// parseFencingEpoch parses the G4 (#57) claim-generation epoch the daemon
+// echoes back on autonomous mutations. It accepts RFC3339, including the
+// fractional seconds the claim response's dispatched_at wire shape carries,
+// and reports a valid timestamptz on success. Empty input is the legacy
+// opt-out: callers map it to an invalid pgtype (unfenced) before reaching
+// here, so empty never reaches this parser.
+func parseFencingEpoch(raw string) (pgtype.Timestamptz, error) {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	if err != nil {
+		return pgtype.Timestamptz{}, err
+	}
+	return pgtype.Timestamptz{Time: t, Valid: true}, nil
+}
+
+// parseOptionalFencingEpochBody extracts an optional dispatched_at fencing
+// epoch from a JSON request body without failing on an empty body or on a
+// body that simply omits the field (legacy daemons). A present-but-malformed
+// value is an error so a crossed wire format fails closed instead of
+// silently downgrading to the unfenced path.
+func parseOptionalFencingEpochBody(body []byte) (pgtype.Timestamptz, error) {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return pgtype.Timestamptz{}, nil
+	}
+	var raw struct {
+		DispatchedAt *string `json:"dispatched_at"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return pgtype.Timestamptz{}, err
+	}
+	if raw.DispatchedAt == nil || strings.TrimSpace(*raw.DispatchedAt) == "" {
+		return pgtype.Timestamptz{}, nil
+	}
+	return parseFencingEpoch(*raw.DispatchedAt)
 }
 
 // StartTask marks a dispatched task as running.
@@ -3578,8 +3630,31 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := h.TaskService.StartTask(r.Context(), parseUUID(taskID))
+	// G4 (#57): optional idempotency-key / fencing epoch. New daemons echo
+	// the claim response's dispatched_at; legacy daemons send no body and
+	// take the unfenced path. A fenced refusal is 409 so a stale daemon
+	// drops the task instead of retrying into a double-run.
+	var epoch pgtype.Timestamptz
+	if r.ContentLength != 0 {
+		body, berr := io.ReadAll(io.LimitReader(r.Body, 4<<10))
+		if berr != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		parsed, perr := parseOptionalFencingEpochBody(body)
+		if perr != nil {
+			writeError(w, http.StatusBadRequest, "invalid dispatched_at: "+perr.Error())
+			return
+		}
+		epoch = parsed
+	}
+
+	task, err := h.TaskService.StartTaskCAS(r.Context(), parseUUID(taskID), epoch)
 	if err != nil {
+		if errors.Is(err, service.ErrTaskClaimFenced) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		slog.Warn("start task failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -3597,6 +3672,9 @@ type TaskWaitLocalDirectoryRequest struct {
 	// enough to fit on the issue card. Empty is accepted; the column is
 	// nullable on the server.
 	Reason string `json:"reason"`
+	// DispatchedAt is the G4 (#57) fencing epoch: the dispatched_at the
+	// daemon observed on its claim response. Empty = legacy unfenced path.
+	DispatchedAt *string `json:"dispatched_at"`
 }
 
 // MarkTaskWaitingLocalDirectory transitions a dispatched task to
@@ -3619,8 +3697,24 @@ func (h *Handler) MarkTaskWaitingLocalDirectory(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	task, err := h.TaskService.MarkTaskWaitingLocalDirectory(r.Context(), parseUUID(taskID), req.Reason)
+	// G4 (#57) fencing: when the daemon echoes its claim epoch, fence the
+	// park to that generation.
+	var epoch pgtype.Timestamptz
+	if req.DispatchedAt != nil && strings.TrimSpace(*req.DispatchedAt) != "" {
+		parsed, perr := parseFencingEpoch(*req.DispatchedAt)
+		if perr != nil {
+			writeError(w, http.StatusBadRequest, "invalid dispatched_at: "+perr.Error())
+			return
+		}
+		epoch = parsed
+	}
+
+	task, err := h.TaskService.MarkTaskWaitingLocalDirectoryCAS(r.Context(), parseUUID(taskID), req.Reason, epoch)
 	if err != nil {
+		if errors.Is(err, service.ErrTaskClaimFenced) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		slog.Warn("mark task waiting_local_directory failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

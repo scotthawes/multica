@@ -402,12 +402,24 @@ func (c *Client) ResolveSkillBundle(ctx context.Context, runtimeID, taskID strin
 	return resp.Bundles[0], stats, nil
 }
 
-func (c *Client) ExtendTaskPrepareLease(ctx context.Context, runtimeID, taskID string) error {
-	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/tasks/%s/prepare-lease", runtimeID, taskID), map[string]any{}, nil)
+func (c *Client) ExtendTaskPrepareLease(ctx context.Context, runtimeID, taskID, dispatchedAt string) error {
+	// G4 (#57): echo the claim response's dispatched_at verbatim as the
+	// fencing epoch. Empty = legacy unfenced extend.
+	path := fmt.Sprintf("/api/daemon/runtimes/%s/tasks/%s/prepare-lease", runtimeID, taskID)
+	if strings.TrimSpace(dispatchedAt) != "" {
+		path += "?dispatched_at=" + url.QueryEscape(strings.TrimSpace(dispatchedAt))
+	}
+	return c.postJSON(ctx, path, map[string]any{}, nil)
 }
 
-func (c *Client) StartTask(ctx context.Context, taskID string) error {
-	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/start", taskID), map[string]any{}, nil)
+func (c *Client) StartTask(ctx context.Context, taskID, dispatchedAt string) error {
+	// G4 (#57): echo the claim response's dispatched_at verbatim as the
+	// idempotency-key / fencing epoch. Empty = legacy unfenced start.
+	body := map[string]any{}
+	if strings.TrimSpace(dispatchedAt) != "" {
+		body["dispatched_at"] = strings.TrimSpace(dispatchedAt)
+	}
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/start", taskID), body, nil)
 }
 
 // MarkTaskWaitingLocalDirectory parks a freshly-dispatched task in the
@@ -418,11 +430,17 @@ func (c *Client) StartTask(ctx context.Context, taskID string) error {
 // status. Idempotent on the daemon's side — calling twice with the same
 // reason is a no-op once the row is already waiting_local_directory (the
 // underlying SQL filters on status='dispatched', so the second call is a
-// 400 the daemon swallows and proceeds to wait).
-func (c *Client) MarkTaskWaitingLocalDirectory(ctx context.Context, taskID, reason string) error {
-	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/wait-local-directory", taskID), map[string]any{
+// 400 unfenced / 409 fenced error the daemon swallows and proceeds to wait).
+func (c *Client) MarkTaskWaitingLocalDirectory(ctx context.Context, taskID, reason, dispatchedAt string) error {
+	body := map[string]any{
 		"reason": reason,
-	}, nil)
+	}
+	// G4 (#57): echo the claim response's dispatched_at verbatim as the
+	// fencing epoch. Empty = legacy unfenced park.
+	if strings.TrimSpace(dispatchedAt) != "" {
+		body["dispatched_at"] = strings.TrimSpace(dispatchedAt)
+	}
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/wait-local-directory", taskID), body, nil)
 }
 
 // TaskCancelAck is the payload of the daemon's cancel acknowledgement.

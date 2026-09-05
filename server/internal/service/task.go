@@ -4557,6 +4557,125 @@ func (s *TaskService) StartTask(ctx context.Context, taskID pgtype.UUID) (*db.Ag
 	return &task, nil
 }
 
+// ErrTaskClaimFenced reports that an autonomous mutation was refused because
+// the caller's claim generation (dispatched_at fencing epoch) no longer owns
+// the task. The daemon must drop the task instead of retrying: another
+// generation (reclaim) already owns it, so retrying would double-run.
+// G4 (#57) CAS/fencing.
+var ErrTaskClaimFenced = errors.New("task claim fenced: stale claim generation")
+
+// SameFencingEpoch reports whether a claim response's dispatched_at still
+// matches the row's current epoch. Both must be valid; a missing epoch on
+// either side never compares equal so legacy callers without an epoch fall
+// back to the unfenced path instead of accidentally fencing.
+func SameFencingEpoch(observed, current pgtype.Timestamptz) bool {
+	if !observed.Valid || !current.Valid {
+		return false
+	}
+	return observed.Time.Equal(current.Time)
+}
+
+// StartTaskCAS is the G4 (#57) fenced variant of StartTask. expectedDispatchedAt
+// is the idempotency-key / fencing epoch the daemon observed on its claim
+// response (taskToResponse.dispatched_at). Only the current claim generation
+// may transition to running:
+//
+//   - CAS hit → running, same side effects as StartTask.
+//   - CAS miss + row already running/waiting with the same epoch → idempotent
+//     duplicate Start, return the current row.
+//   - CAS miss otherwise → ErrTaskClaimFenced (stale daemon must drop the task).
+func (s *TaskService) StartTaskCAS(ctx context.Context, taskID pgtype.UUID, expectedDispatchedAt pgtype.Timestamptz) (*db.AgentTaskQueue, error) {
+	if !expectedDispatchedAt.Valid {
+		return s.StartTask(ctx, taskID)
+	}
+	task, err := s.Queries.StartAgentTaskCAS(ctx, db.StartAgentTaskCASParams{
+		ID:           taskID,
+		DispatchedAt: expectedDispatchedAt,
+	})
+	if err == nil {
+		s.forgetTaskReclaim(task)
+		s.cancelDeferredEscalationsForTask(ctx, task.ID)
+		slog.Info("task started (CAS)", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
+		s.captureTaskStarted(ctx, task)
+		s.ReconcileAgentStatus(ctx, task.AgentID)
+		s.broadcastTaskEvent(ctx, protocol.EventTaskRunning, task)
+		return &task, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("start task CAS: %w", err)
+	}
+	current, gerr := s.Queries.GetAgentTask(ctx, taskID)
+	if gerr != nil {
+		return nil, fmt.Errorf("start task CAS: %w", err)
+	}
+	if (current.Status == "running" || current.Status == "waiting_local_directory") &&
+		SameFencingEpoch(expectedDispatchedAt, current.DispatchedAt) {
+		return &current, nil
+	}
+	return nil, ErrTaskClaimFenced
+}
+
+// MarkTaskWaitingLocalDirectoryCAS is the fenced variant of
+// MarkTaskWaitingLocalDirectory: only the current claim generation may park
+// the task. A stale generation gets ErrTaskClaimFenced.
+func (s *TaskService) MarkTaskWaitingLocalDirectoryCAS(ctx context.Context, taskID pgtype.UUID, reason string, expectedDispatchedAt pgtype.Timestamptz) (*db.AgentTaskQueue, error) {
+	if !expectedDispatchedAt.Valid {
+		return s.MarkTaskWaitingLocalDirectory(ctx, taskID, reason)
+	}
+	reason = sanitizeWaitReason(reason)
+	task, err := s.Queries.MarkAgentTaskWaitingLocalDirectoryCAS(ctx, db.MarkAgentTaskWaitingLocalDirectoryCASParams{
+		ID:               taskID,
+		WaitReason:       pgtype.Text{String: reason, Valid: reason != ""},
+		DispatchedAt:     expectedDispatchedAt,
+		PrepareLeaseSecs: prepareLeaseDuration.Seconds(),
+	})
+	if err == nil {
+		s.forgetTaskReclaim(task)
+		slog.Info("task waiting_local_directory (CAS)",
+			"task_id", util.UUIDToString(task.ID),
+			"issue_id", util.UUIDToString(task.IssueID),
+			"reason", reason,
+		)
+		s.ReconcileAgentStatus(ctx, task.AgentID)
+		extra := map[string]any{}
+		if reason != "" {
+			extra["wait_reason"] = reason
+		}
+		s.broadcastTaskEvent(ctx, protocol.EventTaskWaitingLocalDirectory, task, extra)
+		return &task, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("mark task waiting_local_directory CAS: %w", err)
+	}
+	return nil, ErrTaskClaimFenced
+}
+
+// ExtendTaskPrepareLeaseCAS is the fenced variant of ExtendTaskPrepareLease:
+// a stale claim generation cannot extend the lease past a reclaim.
+func (s *TaskService) ExtendTaskPrepareLeaseCAS(ctx context.Context, taskID, runtimeID pgtype.UUID, expectedDispatchedAt pgtype.Timestamptz) (*db.AgentTaskQueue, error) {
+	if !expectedDispatchedAt.Valid {
+		return s.ExtendTaskPrepareLease(ctx, taskID, runtimeID)
+	}
+	task, err := s.Queries.ExtendAgentTaskPrepareLeaseCAS(ctx, db.ExtendAgentTaskPrepareLeaseCASParams{
+		ID:           taskID,
+		RuntimeID:    runtimeID,
+		DispatchedAt: expectedDispatchedAt,
+		LeaseSecs:    prepareLeaseDuration.Seconds(),
+	})
+	if err == nil {
+		if task.Status == "dispatched" {
+			s.extendTaskReclaimHint(task, time.Now().Add(prepareLeaseDuration))
+		} else {
+			s.forgetTaskReclaim(task)
+		}
+		return &task, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("extend task prepare lease CAS: %w", err)
+	}
+	return nil, ErrTaskClaimFenced
+}
+
 func (s *TaskService) cancelDeferredEscalationsForTask(ctx context.Context, taskID pgtype.UUID) {
 	cancelled, err := s.Queries.CancelDeferredEscalationsForTask(ctx, taskID)
 	if err != nil {

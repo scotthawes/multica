@@ -983,6 +983,50 @@ SET status = 'running',
 WHERE id = $1 AND status IN ('dispatched', 'waiting_local_directory')
 RETURNING *;
 
+-- name: StartAgentTaskCAS :one
+-- G4 (#57) fenced variant of StartAgentTask. The daemon passes the
+-- dispatched_at it observed on its claim response as the fencing epoch /
+-- idempotency key: only the holder of the current claim generation may
+-- transition to running. A stale daemon whose claim was reclaimed (reclaim
+-- refreshes dispatched_at) matches zero rows and must drop the task instead
+-- of double-running it. A duplicate Start with the same epoch after success
+-- matches zero rows as well — callers treat running-with-same-epoch as an
+-- idempotent retry (see TaskService.StartTaskCAS).
+UPDATE agent_task_queue
+SET status = 'running',
+    started_at = now(),
+    wait_reason = NULL,
+    prepare_lease_expires_at = NULL
+WHERE id = $1
+  AND status IN ('dispatched', 'waiting_local_directory')
+  AND dispatched_at = $2
+RETURNING *;
+
+-- name: MarkAgentTaskWaitingLocalDirectoryCAS :one
+-- G4 (#57) fenced variant of MarkAgentTaskWaitingLocalDirectory. Same
+-- dispatched_at fencing epoch as StartAgentTaskCAS: a stale claim generation
+-- cannot park a task another generation already owns.
+UPDATE agent_task_queue
+SET status = 'waiting_local_directory',
+    wait_reason = $2,
+    prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
+WHERE id = $1 AND status = 'dispatched' AND dispatched_at = $3
+RETURNING *;
+
+-- name: ExtendAgentTaskPrepareLeaseCAS :one
+-- G4 (#57) fenced variant of ExtendAgentTaskPrepareLease. A stale daemon
+-- holding an old claim generation must not be able to keep extending the
+-- lease past a reclaim; the dispatched_at guard makes the extend fail closed
+-- so the reclaimed generation keeps its own lease.
+UPDATE agent_task_queue
+SET prepare_lease_expires_at = now() + make_interval(secs => @lease_secs::double precision)
+WHERE id = $1
+  AND runtime_id = $2
+  AND status IN ('dispatched', 'waiting_local_directory')
+  AND started_at IS NULL
+  AND dispatched_at = $3
+RETURNING *;
+
 -- name: MarkAgentTaskWaitingLocalDirectory :one
 -- Transitions a freshly-dispatched task into 'waiting_local_directory' while
 -- the daemon waits for another in-flight task to release the path lock on a

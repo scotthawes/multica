@@ -48,6 +48,10 @@ type HelpDigestItem struct {
 	BlockedReason *string  `json:"blocked_reason,omitempty"`
 	Needs         []string `json:"needs,omitempty"`
 	Confidence    *float64 `json:"confidence,omitempty"`
+	// NeedClass is the G1 resolver verdict (fork issue #53): empty,
+	// credential, or human_only. Additive and omitempty so older readers
+	// ignore it. No category auto-resolves in slice 1.
+	NeedClass HelpNeedClass `json:"need_class,omitempty"`
 }
 
 // HelpDigestDetails is the jsonb payload of an agent_help_digest inbox item.
@@ -230,6 +234,7 @@ func buildHelpDigestDetails(items []db.InboxItem) (HelpDigestDetails, error) {
 			BlockedReason: src.BlockedReason,
 			Needs:         src.Needs,
 			Confidence:    src.Confidence,
+			NeedClass:     ClassifyHelpNeeds(src.Needs),
 		})
 	}
 	// Deterministic ordering by task_id so digests are stable across runs.

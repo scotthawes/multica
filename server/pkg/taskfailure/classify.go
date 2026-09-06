@@ -152,6 +152,7 @@ func Classify(rawError string) Reason {
 	//    anchored regex — see providerHTTP5xxRe's docstring.
 	case containsAny(lower,
 		"server had an error",
+		"unexpected server error",
 		"provider returned error",
 		"internal error",
 		"service unavailable",

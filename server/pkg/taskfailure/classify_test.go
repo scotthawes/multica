@@ -87,6 +87,7 @@ func TestClassifyRules(t *testing.T) {
 
 		// 6. Provider 5xx / server error.
 		{"server had an error", "the server had an error processing your request", ReasonAgentProviderServerError},
+		{"unexpected server error", "Unexpected server error. Check server logs for details.", ReasonAgentProviderServerError},
 		{"provider returned error", "provider returned error: malformed response", ReasonAgentProviderServerError},
 		{"internal error", "An internal error occurred while serving the request", ReasonAgentProviderServerError},
 		{"500 with delimiter", "API Error: 500 Internal Server Error", ReasonAgentProviderServerError},

@@ -1031,7 +1031,7 @@ func TestCreateAutopilotTrigger_RejectsAPIKind(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 on kind=api, got %d body=%s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "schedule or webhook") {
+	if !strings.Contains(w.Body.String(), "kind must be schedule, webhook, or event") {
 		t.Fatalf("expected message to name allowed kinds, body=%s", w.Body.String())
 	}
 }

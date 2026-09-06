@@ -2445,8 +2445,10 @@ func TestCompleteTask_CommentTriggered_SynthesizesCommentWhenAgentSilent(t *test
 		t.Fatalf("CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Exactly one agent comment on the issue, threaded under the trigger,
-	// carrying the agent's final output.
+	// Exactly two agent comments on the issue (GAP-29 hollow-completion
+	// semantics): the synthesized fallback carrying the agent's final
+	// output, threaded under the trigger, plus the hollow-completion
+	// marker (branchless completed task → human review).
 	rows, err := testPool.Query(ctx, `
 		SELECT content, parent_id FROM comment
 		WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2
@@ -2461,31 +2463,44 @@ func TestCompleteTask_CommentTriggered_SynthesizesCommentWhenAgentSilent(t *test
 		content  string
 		parentID *string
 		seen     int
+		sawSynthesis bool
+		sawHollow    bool
 	)
 	for rows.Next() {
 		if err := rows.Scan(&content, &parentID); err != nil {
 			t.Fatalf("scan comment: %v", err)
 		}
 		seen++
-	}
-	if seen != 1 {
-		t.Fatalf("expected exactly 1 synthesized agent comment, got %d", seen)
-	}
-	if content != agentFinalOutput {
-		t.Fatalf("synthesized comment content = %q, want %q", content, agentFinalOutput)
-	}
-	if parentID == nil || *parentID != triggerCommentID {
-		got := "<nil>"
-		if parentID != nil {
-			got = *parentID
+		switch content {
+		case agentFinalOutput:
+			sawSynthesis = true
+			if parentID == nil || *parentID != triggerCommentID {
+				got := "<nil>"
+				if parentID != nil {
+					got = *parentID
+				}
+				t.Fatalf("synthesized comment parent_id = %s, want trigger comment %s", got, triggerCommentID)
+			}
+		case "⚠️ Hollow completion: this task was marked completed but produced no branch. Flagged for human review.":
+			sawHollow = true
 		}
-		t.Fatalf("synthesized comment parent_id = %s, want trigger comment %s", got, triggerCommentID)
+	}
+	if seen != 2 {
+		t.Fatalf("expected 2 agent comments (synthesis + hollow marker), got %d", seen)
+	}
+	if !sawSynthesis {
+		t.Fatalf("missing synthesized comment with final output %q", agentFinalOutput)
+	}
+	if !sawHollow {
+		t.Fatalf("missing GAP-29 hollow-completion marker")
 	}
 }
 
 // Companion to the above: when the agent DID post its own comment during the
-// run, CompleteTask must not synthesize a duplicate. Guards against the
-// common case where the fix is over-eager and creates two comments per task.
+// run, CompleteTask must not synthesize a duplicate. Under GAP-29
+// hollow-completion semantics the branchless completed task still leaves
+// the hollow marker, so the expected count is 2 (agent's own reply +
+// hollow), with no synthesized fallback duplicating the terminal output.
 func TestCompleteTask_CommentTriggered_SkipsSynthesisWhenAgentAlreadyCommented(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -2535,8 +2550,17 @@ func TestCompleteTask_CommentTriggered_SkipsSynthesisWhenAgentAlreadyCommented(t
 		SELECT count(*) FROM comment
 		WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2
 	`, issueID, agentID).Scan(&count)
-	if count != 1 {
-		t.Fatalf("expected 1 agent comment (the agent's own reply), got %d — synthesis duplicated", count)
+	if count != 2 {
+		t.Fatalf("expected 2 agent comments (own reply + GAP-29 hollow marker), got %d — synthesis duplicated or hollow missing", count)
+	}
+	var duplicated int
+	dbfx.QueryRow(t, `
+		SELECT count(*) FROM comment
+		WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2
+		  AND content = 'final terminal text that must NOT become a comment'
+	`, issueID, agentID).Scan(&duplicated)
+	if duplicated != 0 {
+		t.Fatalf("synthesis duplicated agent reply with terminal output")
 	}
 }
 
@@ -2583,8 +2607,18 @@ func TestCompleteTask_CommentTriggered_SuppressesTrivialDoneOutput(t *testing.T)
 		SELECT count(*) FROM comment
 		WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2
 	`, issueID, agentID).Scan(&count)
-	if count != 0 {
-		t.Fatalf("expected no synthesized agent comment for trivial Done output, got %d", count)
+	// GAP-29: trivial Done output still suppresses the synthesized fallback,
+	// but the branchless completed task leaves the hollow-completion marker.
+	if count != 1 {
+		t.Fatalf("expected 1 agent comment (GAP-29 hollow marker, synthesis suppressed), got %d", count)
+	}
+	var content string
+	dbfx.QueryRow(t, `
+		SELECT content FROM comment
+		WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2
+	`, issueID, agentID).Scan(&content)
+	if content != "⚠️ Hollow completion: this task was marked completed but produced no branch. Flagged for human review." {
+		t.Fatalf("expected GAP-29 hollow marker, got %q", content)
 	}
 }
 
@@ -2624,14 +2658,30 @@ func TestCompleteTask_AssignmentTriggered_DoesNotSuppressTrivialDoneOutput(t *te
 	}
 
 	var content string
+	var count int
+	dbfx.QueryRow(t, `
+		SELECT count(*) FROM comment
+		WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2
+	`, issueID, agentID).Scan(&count)
+	// GAP-29: assignment-triggered trivial output is still synthesized, and
+	// the branchless completed task additionally leaves the hollow marker.
+	if count != 2 {
+		t.Fatalf("expected 2 agent comments (Done. synthesis + GAP-29 hollow marker), got %d", count)
+	}
+	dbfx.QueryRow(t, `
+		SELECT count(*) FROM comment
+		WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2
+		  AND content = 'Done.'
+	`, issueID, agentID).Scan(&count)
+	if count != 1 {
+		t.Fatalf("missing synthesized Done. comment, got %d", count)
+	}
 	dbfx.QueryRow(t, `
 		SELECT content FROM comment
 		WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2
 		ORDER BY created_at DESC LIMIT 1
 	`, issueID, agentID).Scan(&content)
-	if content != "Done." {
-		t.Fatalf("synthesized comment content = %q, want Done.", content)
-	}
+	_ = content
 }
 
 func TestClaimResponseAgentIdentityMatches(t *testing.T) {

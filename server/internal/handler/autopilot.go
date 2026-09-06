@@ -151,7 +151,7 @@ type AutopilotTriggerResponse struct {
 	CreatedAt         string  `json:"created_at"`
 	UpdatedAt         string  `json:"updated_at"`
 	// EventFilters is the declared event scope. Only present for webhook
-	// triggers; omitted when the trigger accepts all events. Serializes as
+	// or event triggers; omitted when the trigger accepts all events. Serializes as
 	// a JSON array of {event, actions?} objects — never as a base64 string
 	// (which is what []byte would produce through encoding/json).
 	EventFilters []WebhookEventFilter `json:"event_filters,omitempty"`
@@ -361,7 +361,7 @@ type CreateAutopilotTriggerRequest struct {
 	// values: "generic" (default) or "github". Unset → "generic".
 	Provider *string `json:"provider"`
 	// EventFilters is an optional list of {event, actions?} scopes. Only
-	// meaningful for webhook triggers. nil/empty means "accept all events".
+	// meaningful for webhook or event triggers. nil/empty means "accept all events".
 	EventFilters []WebhookEventFilter `json:"event_filters,omitempty"`
 }
 
@@ -1401,9 +1401,10 @@ func (h *Handler) CreateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if req.Kind != "webhook" && req.Kind != "event" && len(req.EventFilters) > 0 {
-		// event_filters narrows webhook ingress — it has no meaning for a
-		// schedule trigger and would otherwise be silently dropped.
-		writeError(w, http.StatusBadRequest, "event_filters is only valid for webhook triggers")
+		// event_filters narrows webhook ingress / defines the event
+		// subscription — it has no meaning for a schedule trigger and would
+		// otherwise be silently dropped.
+		writeError(w, http.StatusBadRequest, "event_filters is only valid for webhook or event triggers")
 		return
 	}
 	if err := validateWebhookEventFilters(req.EventFilters); err != nil {
@@ -1482,7 +1483,16 @@ func (h *Handler) CreateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Schedule create: write the trigger and republish the rule version atomically.
+	// Schedule/event create: write the trigger and republish the rule version atomically.
+	// Event triggers carry their subscription contract in event_filters, so
+	// encode it here — the webhook path persists via
+	// createWebhookTriggerWithMintedToken, but this generic path would
+	// otherwise silently drop the filters and break the EventKind round-trip.
+	eventFiltersBytes, err := encodeWebhookEventFilters(req.EventFilters)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode event_filters")
+		return
+	}
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create trigger")
@@ -1500,6 +1510,7 @@ func (h *Handler) CreateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 		NextRunAt:      nextRunAt,
 		Label:          ptrToText(req.Label),
 		WebhookToken:   webhookToken,
+		EventFilters:   eventFiltersBytes,
 		// Seed the responsible publisher = creator; a later substantive edit re-stamps
 		// it to the editor so runs attribute to whoever last shaped this trigger
 		// (source=trigger_owner, MUL-4302).

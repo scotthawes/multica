@@ -26,6 +26,7 @@ func TestReasonStringWireValues(t *testing.T) {
 		{ReasonTimeout, "timeout"},
 		{ReasonIterationLimit, "iteration_limit"},
 		{ReasonAgentBlocked, "agent_blocked"},
+		{ReasonAgentRequestedHelp, "agent_requested_help"},
 		{ReasonAPIInvalidRequest, "api_invalid_request"},
 		{ReasonSkillBundleUnavailable, "skill_bundle_unavailable"},
 		{ReasonRuntimeCLITimeout, "runtime_cli_timeout"},
@@ -49,7 +50,7 @@ func TestReasonStringWireValues(t *testing.T) {
 		{ReasonAgentUnknown, "agent_error.unknown"},
 	}
 
-	if got, want := len(cases), 27; got != want {
+	if got, want := len(cases), 28; got != want {
 		t.Fatalf("constant count = %d, want %d (canonical taxonomy size)", got, want)
 	}
 
@@ -76,6 +77,7 @@ func TestIsAgentError(t *testing.T) {
 		ReasonTimeout,
 		ReasonIterationLimit,
 		ReasonAgentBlocked,
+		ReasonAgentRequestedHelp,
 		ReasonAPIInvalidRequest,
 		ReasonSkillBundleUnavailable,
 		ReasonRuntimeCLITimeout,
@@ -121,8 +123,8 @@ func TestAllReasonsContents(t *testing.T) {
 	t.Parallel()
 
 	got := AllReasons()
-	if len(got) != 27 {
-		t.Fatalf("AllReasons() returned %d entries, want 27", len(got))
+	if len(got) != 28 {
+		t.Fatalf("AllReasons() returned %d entries, want 28", len(got))
 	}
 
 	seen := make(map[Reason]bool, len(got))
@@ -139,8 +141,8 @@ func TestAllReasonsContents(t *testing.T) {
 		}
 	}
 
-	if platformCount != 12 {
-		t.Errorf("AllReasons(): platform-side count = %d, want 12", platformCount)
+	if platformCount != 13 {
+		t.Errorf("AllReasons(): platform-side count = %d, want 13", platformCount)
 	}
 	if agentCount != 15 {
 		t.Errorf("AllReasons(): agent-side count = %d, want 15", agentCount)
@@ -154,6 +156,7 @@ func TestAllReasonsContents(t *testing.T) {
 		ReasonQueuedExpired, ReasonRuntimeOffline, ReasonRuntimeReconnectTimeout,
 		ReasonRuntimeRecovery,
 		ReasonTimeout, ReasonIterationLimit, ReasonAgentBlocked,
+		ReasonAgentRequestedHelp,
 		ReasonAPIInvalidRequest, ReasonSkillBundleUnavailable,
 		ReasonRuntimeCLITimeout, ReasonInvalidTaskIdentity, ReasonIssueWindowRestricted,
 		ReasonAgentProviderAuthOrAccess, ReasonAgentProviderQuotaLimit,
